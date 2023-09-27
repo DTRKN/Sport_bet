@@ -1,32 +1,45 @@
-from models.models import events, Event
+from db.schemas import events, Event
 from fastapi import Path, FastAPI, HTTPException, APIRouter
 import json
 import time
+from config import channel_rb, exchange_rb
+import asyncio
 import aio_pika
 
 router = APIRouter()
-queue_name = "ch_line"
-dict_str = [e for e in events.values()]
 
+new_dict_str = None
 @router.get('/connect')
 async def connect():
+    global new_dict_str
 
-    global dict_str, queue_name
+    while True:
 
-    connection = await aio_pika.connect(
-        "amqp://guest:guest@127.0.0.1/"
-    )
-    async with connection:
+        await asyncio.sleep(1)
 
-        channel = await connection.channel()
-
-        await channel.default_exchange.publish(
-            aio_pika.Message(body=str(dict_str).encode()),
-            routing_key=queue_name,
+        connection = await aio_pika.connect(
+            "amqp://guest:guest@127.0.0.1/"
         )
+
+        dict_str = [e for e in events.values()]
+
+        async with connection:
+
+            channel = await connection.channel()
+
+            await channel.declare_exchange(exchange_rb, durable=True)
+
+            if new_dict_str != dict_str:
+
+                new_dict_str = dict_str
+                await channel.default_exchange.publish(
+                    aio_pika.Message(body=str(dict_str).encode()),
+                    routing_key=channel_rb,
+                )
 
 @router.put('/event')
 async def create_event(event: Event):
+    global events
     if event.event_id not in events:
         events[event.event_id] = event
         return [None]

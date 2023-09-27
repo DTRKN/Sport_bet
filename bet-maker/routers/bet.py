@@ -1,56 +1,43 @@
 import asyncio
 
 from fastapi import Path, FastAPI, HTTPException, APIRouter
-from models.models import User, users
+from db.schemas import User, users
+from libs.data_handling import Data_handling
+from config import channel_rb, exchange_rb
 import aio_pika
 import time
+import logging
+import collections
 import re
 
-
-lst = []
-my_dict = {}
-queue_name = "ch_line"
-
-def format(lst):
-    strings = str(lst).split('Event(')[1:]
-    j = 0
-
-    for item in strings:
-        item = item.strip().rstrip(", ").split(", ")
-        temp_dict = {}
-        for i in item:
-            if '=' in i:
-                key, value = i.split("=")
-                temp_dict[key] = value
-                if len(temp_dict) == 4:
-                    j += 1
-                    my_dict[str(j)] = temp_dict
-    return my_dict
+data_hand = Data_handling()
+router = APIRouter()
 
 async def process_message(
     message: aio_pika.abc.AbstractIncomingMessage,
 ) -> None:
-    global lst
     async with message.process():
-        lst.clear()
-        lst.append(message.body)
+
+        await data_hand.clear()
+        await data_hand.append(message.body)
+        await data_hand.format()
+        print('Get data from line-prov')
+
         await asyncio.sleep(1)
-
-router = APIRouter()
-
 @router.get('/connect')
 async def connect():
-    global queue_name
-
     connection = await aio_pika.connect_robust(
         "amqp://guest:guest@127.0.0.1/",
     )
     channel = await connection.channel()
-
     await channel.set_qos(prefetch_count=100)
-    queue = await channel.declare_queue(queue_name, auto_delete=True)
+    channel = await connection.channel()
 
+    await channel.declare_exchange(exchange_rb, durable=True)
+
+    queue = await channel.declare_queue(channel_rb, auto_delete=False, durable=True)
     await queue.consume(process_message)
+
     try:
         await asyncio.Future()
     finally:
@@ -58,11 +45,8 @@ async def connect():
 
 @router.get('/events')
 async def get_events():
-    global my_dict
 
-    my_dict.clear()
-    my_dict = format(lst)
-    print(my_dict)
+    my_dict = await data_hand.get_dict()
 
     return my_dict
 
@@ -77,6 +61,8 @@ async def create_user_rate(user: User):
 
 @router.post('/bet')
 async def put_bet(name: str):
+
+    my_dict = await data_hand.get_dict()
     try:
         if name in users and my_dict is not None:
             if my_dict[users[name].event_id]:
@@ -93,10 +79,12 @@ async def put_bet(name: str):
 @router.get('/bet_info/{bet_id}')
 async def get_info_bet(name: str, id_event: str):
     if name in users:
-        print(time.time())
-        print(users[name].time)
 
+        my_dict = await data_hand.get_dict()
+
+        print(time.time())
         print(int(my_dict[id_event]['deadline']))
+
         if int(time.time()) > int(my_dict[id_event]['deadline']):
             return f'Your winnings are users[name].bet * {my_dict[id_event]["coefficient"]}'
         else:
